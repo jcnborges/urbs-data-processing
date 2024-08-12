@@ -1,4 +1,4 @@
-FROM jupyter/pyspark-notebook:spark-2
+FROM jupyter/pyspark-notebook:spark-3.2.1
 
 USER root
 RUN apt-get -qq update && apt-get install -y --no-install-recommends apt-utils openssh-client

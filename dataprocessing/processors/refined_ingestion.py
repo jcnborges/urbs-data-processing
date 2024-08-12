@@ -1,36 +1,28 @@
 import math
-import h3
+from pyspark.sql import DataFrame
 import pyspark.sql.functions as F
 import pyspark.sql.types as T
-from pyspark.sql import DataFrame
 from pyspark.sql.window import Window
-import ast
 from .sparketl import ETLSpark
 
+@F.udf(returnType=T.DoubleType())
+def interpolate_timestamp(seq: int, event_timestamp: T.TimestampType, next_seq: int, next_event_timestamp: T.TimestampType) -> float:
+    try:
+        """
+        Interpolates a timestamp based on the seq number and time of surrounding rows.
+        """
 
-@F.udf(returnType=T.StringType())
-def create_flag_status(dv: float) -> str:
-    return 'MOVING' if dv is not None and dv > 15 else 'STOPPED'
-
+        # Linear interpolation:
+        timestamp_diff = (next_event_timestamp - event_timestamp).total_seconds()
+        interpolated_seconds = event_timestamp.timestamp() + timestamp_diff / (next_seq - seq)
+        return interpolated_seconds
+    except Exception as err:
+        print(f"Exception has been occurred :{err}")
+        print(f"seq: {seq} event_timestamp: {event_timestamp} next_seq: {next_seq} next_event_timestamp: {next_event_timestamp}")
 
 @F.udf(returnType=T.DoubleType())
-def delta_velocity(delta_distance: float, delta_time: float) -> float:
+def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     try:
-        return round((delta_distance / delta_time) * 3.6, 2) if (
-                delta_distance is not None and delta_time is not None and delta_time > 0) else 0
-    except TypeError:
-        print(f"delta_distance: {delta_distance} , delta_time: {delta_time}")
-
-
-@F.udf(T.ArrayType(T.StringType()))
-def tolist(text):
-    return ast.literal_eval(text)
-
-
-@F.udf(returnType=T.DoubleType())
-def haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    try:
-
         R: int = 6371000  # radius of Earth in meters
         phi_1 = math.radians(lat1)
         phi_2 = math.radians(lat2)
@@ -47,129 +39,52 @@ def haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
         print(f"Exception has been occurred :{err}")
         print(f"lon1: {lon1} lat1: {lat1} lon2: {lon2} lat2: {lat2}")
 
-
-# h3_level = 10
-@F.udf(returnType=T.StringType())
-def lat_lng_to_h3(latitude, longitude, h3_level):
-    return h3.geo_to_h3(float(latitude), float(longitude), h3_level)
-
-
-class LineRefinedProcess:
-
+class BusItineraryRefinedProcess:
+    
     def __init__(self, year, month, day):
         self.etlspark = ETLSpark()
-        self.df = self.filter_data(year, month, day)
+        self.bus_stops = self.filter_data(year, month, day)
 
     def perform(self):
-        service_categories = self.service_category()
-        self.persist(service_categories, "/data/refined/service_categories")
+        # Convert columns to numeric
+        self.bus_stops = self.bus_stops.withColumn("latitude", self.bus_stops["latitude"].cast("double"))
+        self.bus_stops = self.bus_stops.withColumn("longitude", self.bus_stops["longitude"].cast("double"))
+        self.bus_stops = self.bus_stops.withColumn("seq", self.bus_stops["seq"].cast("int"))
 
-        colors = self.color()
-        self.persist(colors, "/data/refined/colors")
+        # Sort values
+        self.bus_stops = self.bus_stops.orderBy(["line_code", "itinerary_id", "seq"])
 
-        lines = self.lines()
-        self.persist(lines, "/data/refined/lines")
+        # Add a row number column to ensure we can drop duplicates based on the first occurrence
+        window_spec = Window.partitionBy("line_code", "itinerary_id", "latitude", "longitude", "name", "number", "line_way", "type", "year", "month", "day").orderBy("seq")
+        self.bus_stops = self.bus_stops.withColumn("row_num", F.row_number().over(window_spec))
 
-    def __call__(self, *args, **kwargs):
-        self.perform()
+        # Drop duplicates based on the tuple and keep the first occurrence
+        self.bus_stops = self.bus_stops.filter(F.col("row_num") == 1).drop("row_num")
 
-    def filter_data(self, year: str, month: str, day: str) -> DataFrame:
-        return (self.etlspark.sqlContext.read.parquet("/data/trusted/lines")
-                .filter(f"year =='{year}' and month=='{month}' and day=='{day}'"))
+        # Select specific columns
+        self.bus_stops = self.bus_stops.select("line_code", "itinerary_id", "latitude", "longitude", "name", "number", "line_way", "type", "seq", "year", "month", "day").distinct()
 
-    def service_category(self) -> DataFrame:
-        return (self.df.select("service_category", "year", "month", "day")
-                .distinct())
+        # Add 'id' column
+        self.bus_stops = self.bus_stops.withColumn("id", self.bus_stops["number"].cast("int"))
 
-    def color(self) -> DataFrame:
-        return (self.df.select("color", "year", "month", "day")
-                .distinct())
+        # Add next_stop_id, next_stop_latitude, next_stop_longitude using window function
+        window_spec = Window.partitionBy("line_code", "itinerary_id").orderBy("seq")
 
-    def lines(self) -> DataFrame:
-        return self.df.distinct()
+        self.bus_stops = self.bus_stops.withColumn("next_stop_id", F.lag("id", -1).over(window_spec))
+        self.bus_stops = self.bus_stops.withColumn("next_stop_latitude", F.lag("latitude", -1).over(window_spec))
+        self.bus_stops = self.bus_stops.withColumn("next_stop_longitude", F.lag("longitude", -1).over(window_spec))
+        self.bus_stops = self.bus_stops.withColumn("next_stop_delta_s", haversine(F.col("latitude"), F.col("longitude"), F.col("next_stop_latitude"), F.col("next_stop_longitude")))
 
-    def persist(self, df: DataFrame, output: str):
-        (df.write.mode('overwrite')
-         .partitionBy("year", "month", "day")
-         .format("parquet").save(output))
+        # Filter rows where id != next_stop_id or next_stop_id is null
+        self.bus_stops = self.bus_stops.filter((F.col("id") != F.col("next_stop_id")) | F.col("next_stop_id").isNull())
 
+        # Add 'seq' and 'max_seq' columns using window function
+        self.bus_stops = self.bus_stops.withColumn("seq", F.row_number().over(window_spec) - 1)
 
-class TimetableRefinedProcess:
+        window_spec = Window.partitionBy("line_code", "itinerary_id")
+        self.bus_stops = self.bus_stops.withColumn("max_seq", F.max("seq").over(window_spec))
 
-    def __init__(self, year, month, day):
-        self.year = year
-        self.month = month
-        self.day = day
-        self.etlspark = ETLSpark()
-        self.df = self.filter_data(year, month, day)
-
-    def __call__(self, *args, **kwargs):
-        self.perform()
-
-    def perform(self):
-        trips = self.trips()
-        self.save(trips, "/data/refined/trips")
-
-    def filter_data(self, year: str, month: str, day: str) -> DataFrame:
-        return (self.etlspark.sqlContext.read.parquet("/data/trusted/timetable")
-                .filter(f"year ='{year}' and month='{month}' and day='{day}'"))
-
-    def timetable(self) -> DataFrame:
-        return (self.df.withColumn('end_time', F.lead('time')
-                                   .over(
-            Window.partitionBy('line_code', 'timetable', 'vehicle')
-                .orderBy('line_code', 'time')))
-                .withColumn('end_point', F.lead('busstop_number')
-                            .over(
-            Window.partitionBy('line_code', 'timetable', 'vehicle')
-                .orderBy('line_code', 'time')))
-                .select(
-            'line_code',
-            F.col('busstop_number').alias('start_point'),
-            F.col('time').alias('start_time'),
-            'timetable',
-            'vehicle',
-            'end_time',
-            'end_point',
-            "year",
-            "month",
-            "day"
-        )
-                .orderBy('line_code', 'time'))
-
-    def trips(self) -> DataFrame:
-        bs = BusStopRefinedProcess(self.year, self.month, self.day)
-        trip_endpoints = bs.trip_endpoints().drop("year", "month", "day")
-
-        return (self.timetable()
-                .join(trip_endpoints, ['line_code', 'start_point', 'end_point'], how='left')
-                .filter('line_way is not null'))
-
-    @staticmethod
-    def save(df: DataFrame, output: str):
-        (df.write.mode('overwrite')
-         .partitionBy("year", "month", "day")
-         .format("parquet").save(output))
-
-
-class BusStopRefinedProcess:
-
-    def __init__(self, year, month, day):
-        self.etlspark = ETLSpark()
-        self.df = self.filter_data(year, month, day)
-
-    def perform(self):
-        bus_stop_type = self.bus_stop_type()
-        self.save(bus_stop_type, "/data/refined/bus_stop_type")
-
-        bus_stops = self.bus_stops()
-        self.save(bus_stops, "/data/refined/bus_stops")
-
-        line_routes = self.line_routes()
-        self.save(line_routes, "/data/refined/line_routes")
-
-        trip_endpoints = self.trip_endpoints()
-        self.save(trip_endpoints, "/data/refined/trip_endpoints")
+        self.save(self.bus_stops, "/data/refined/bus_itineraries")
 
     def __call__(self, *args, **kwargs):
         self.perform()
@@ -178,60 +93,27 @@ class BusStopRefinedProcess:
         return (self.etlspark.sqlContext.read.parquet("/data/trusted/busstops")
                 .filter(f"year =='{year}' and month=='{month}' and day=='{day}'"))
 
-    def bus_stop_type(self) -> DataFrame:
-        return self.df.select("type", "year", "month", "day").distinct()
+    @staticmethod
+    def save(df: DataFrame, output: str):
+        (df.write.mode('overwrite')
+         .partitionBy("year", "month", "day")
+         .format("parquet").save(output))
+        
+class BusLineRefinedProcess:
+    
+    def __init__(self, year, month, day):
+        self.etlspark = ETLSpark()
+        self.bus_lines = self.filter_data(year, month, day)      
+    
+    def perform(self):
+        self.save(self.bus_lines, "/data/refined/bus_lines")
 
-    def bus_stops(self, ) -> DataFrame:
-        neighborhoods = self.etlspark.sqlContext.read.option("header", "true").csv(
-            "/data/static_data/neighborhoods/bairros.csv")
+    def __call__(self, *args, **kwargs):
+        self.perform()
 
-        neighborhoods = neighborhoods.withColumn("neighborhoods_h3_index10", tolist(F.col("h3_index10"))).drop(
-            "h3_index10").drop("name", "section_code", "section_name")
-
-        bus_stops = (self.df
-                     .select("line_code", "line_way", "number", "name", F.col("seq").cast(T.IntegerType()).alias("seq"),
-                             "latitude", "longitude", "type", "year", "month", "day",
-                             lat_lng_to_h3(F.col("latitude"), F.col("longitude"), F.lit(10)).alias("h3_index10"))
-                     .distinct())
-
-        return (bus_stops.join(neighborhoods, F.expr("array_contains(neighborhoods_h3_index10, h3_index10)"))) \
-            .drop("neighborhoods_h3_index10")
-
-    def line_routes(self) -> DataFrame:
-        bus_stops = self.bus_stops().select("line_code", "line_way", "number", "name", "seq", "year", "month", "day")
-
-        return (bus_stops.alias("ps")
-                .join(bus_stops.alias("pe"),
-                      (F.col("ps.line_code") == F.col("pe.line_code")) & (
-                              F.col("ps.line_way") == F.col("pe.line_way")) & (
-                              F.col("ps.seq") + 1 == F.col("pe.seq")))
-                .select("ps.line_code", "ps.line_way", F.col("ps.seq").alias("start_seq"),
-                        F.col("pe.seq").alias("end_seq"),
-                        F.col("ps.number").alias("start_point"), F.col("pe.number").alias("end_point"), "ps.year",
-                        "ps.month", "ps.day")
-                .orderBy("line_code", F.asc("start_seq")))
-
-    def line_start_end(self) -> DataFrame:
-        return (self.bus_stops().groupby("line_code", "line_way", "year", "month", "day")
-                .agg(F.min('seq').alias("start_trip"), F.max('seq').alias("end_trip"))
-                .select("line_code", "line_way", "start_trip", "end_trip", "year", "month", "day"))
-
-    def trip_endpoints(self) -> DataFrame:
-        bus_stops = self.bus_stops()
-        line_start_end = self.line_start_end()
-
-        return (line_start_end.alias("ss")
-                .join(bus_stops.alias("ps"),
-                      (F.col("ss.line_code") == F.col("ps.line_code")) & (
-                              F.col("ss.line_way") == F.col("ps.line_way")) & (
-                              F.col("ss.start_trip") == F.col("ps.seq")))
-                .join(bus_stops.alias("pe"),
-                      (F.col("ss.line_code") == F.col("pe.line_code")) & (
-                              F.col("ss.line_way") == F.col("pe.line_way")) & (
-                              F.col("ss.end_trip") == F.col("pe.seq")))
-                .select("ps.line_code", "ps.line_way", F.col("ps.number").alias("start_point"),
-                        F.col("pe.number").alias("end_point"), "ss.year",
-                        "ss.month", "ss.day"))
+    def filter_data(self, year: str, month: str, day: str) -> DataFrame:
+        return (self.etlspark.sqlContext.read.parquet("/data/trusted/lines")
+                .filter(f"year =='{year}' and month=='{month}' and day=='{day}'"))
 
     @staticmethod
     def save(df: DataFrame, output: str):
@@ -239,196 +121,256 @@ class BusStopRefinedProcess:
          .partitionBy("year", "month", "day")
          .format("parquet").save(output))
 
-
-class TrackingDataRefinedProcess:
-
-    def __init__(self, year, month, day):
-        self.year = year
-        self.month = month
-        self.day = day
+class BusTrackingRefinedProcess:
+    def __init__(self, year, month, day, line_code):
         self.etlspark = ETLSpark()
-        self.df = self.filter_data(year, month, day)
-
-    def filter_data(self, year: str, month: str, day: str) -> DataFrame:
-        tracking_data = (self.etlspark.sqlContext.read.parquet("/data/trusted/vehicles")
-                         .filter(f"year ='{year}' and month ='{month}' and day ='{day}'")
-                         .withColumn("hour", F.hour(F.col("event_timestamp")))
-                         .withColumn("minute", F.minute(F.col("event_timestamp"))).sort(F.asc("event_timestamp"))
-                         )
-
-        scheduled_vehicles = TimetableRefinedProcess(year, month, day).trips().select("line_code", "vehicle").distinct()
-        tracking_vehicles = tracking_data.select("line_code", "vehicle").distinct()
-        tracking_scheduled_vehicles = tracking_vehicles.join(scheduled_vehicles, ["line_code", "vehicle"], 'inner')
-
-        return tracking_data.join(tracking_scheduled_vehicles, ["line_code", "vehicle"], 'inner')
-
+        self.vehicles = self.filter_data(year, month, day, line_code)
+        self.bus_itineraries = self.filter_bus_itineraries(year, month, day, line_code)
+        self.bus_lines = self.filter_bus_lines(year, month, day, line_code)      
+    
     def perform(self):
-        vehicles = self.compute_metrics()
 
-        stop_events = self.stop_events(vehicles)
+        # Convert event_timestamp to TimestampType
+        self.vehicles = self.vehicles.withColumn("event_timestamp", F.to_timestamp(F.col("event_timestamp")))
 
-        bus_event_edges = self.event_edges(vehicles)
-        self.save(bus_event_edges, "/data/refined/bus_event_edges")
+        # Create the dim_bus_stop DataFrame
+        dim_bus_stop = self.bus_itineraries.select(
+            "line_code", "latitude", "longitude", "id"
+        ).distinct()
 
-        events = self.process_events(stop_events, bus_event_edges)
-        self.save(events, "/data/refined/events")
+        # Rename columns to avoid ambiguity
+        dim_bus_stop = dim_bus_stop.withColumnRenamed(
+            "latitude", "bus_stop_latitude"
+        ).withColumnRenamed("longitude", "bus_stop_longitude")
+
+        # Join vehicles_df with dim_bus_stop_df on 'line_code'
+        joined = self.vehicles.join(
+            dim_bus_stop, on="line_code", how="left"
+        )
+
+        # Select the desired columns from the joined DataFrame
+        map_matching = joined.select(
+            "line_code",
+            "event_timestamp",
+            "latitude",  # From vehicles
+            "longitude", # From vehicles
+            "vehicle",
+            "year",
+            "month",
+            "day",
+            "id",  # From dim_bus_stop
+            "bus_stop_latitude",  # From dim_bus_stop
+            "bus_stop_longitude"  # From dim_bus_stop
+        )        
+
+        # Calculate the haversine distance
+        map_matching = map_matching.withColumn("distance", haversine(F.col("latitude"), F.col("longitude"), F.col("bus_stop_latitude"), F.col("bus_stop_longitude")))
+
+        # Filter for distances <= 50 meters
+        map_matching = map_matching.filter(F.col("distance") <= 50)
+
+        # Define a window partition by vehicle and event_timestamp
+        window = Window.partitionBy("vehicle", "event_timestamp").orderBy("distance")
+
+        # Find the row with minimum haversine distance within each group
+        map_matching = map_matching.withColumn("row_num", F.row_number().over(window))
+
+        # Filter for the row with row_num 1 (minimum distance)
+        map_matching = map_matching.filter(F.col("row_num") == 1)
+
+        # Calculate the mean event_timestamp for each group using the time window
+        map_matching = map_matching.groupBy(
+            "line_code",
+            "vehicle",
+            "year",
+            "month",
+            "day",
+            "id",  # From dim_bus_stop
+            F.window("event_timestamp", "30 minutes").alias("time_window")            
+        ).agg(
+            F.avg("event_timestamp").alias("mean_event_timestamp")
+        )
+
+        # Convert the mean_event_timestamp to TimestampType
+        map_matching = map_matching.withColumn(
+            "mean_event_timestamp",
+            map_matching["mean_event_timestamp"].cast(T.TimestampType())
+        ).withColumnRenamed("mean_event_timestamp", "event_timestamp")
+
+        # Select only relevant columns for perform the map matching
+        map_matching = map_matching.select(
+            "line_code",
+            "vehicle",
+            "year",
+            "month",
+            "day",
+            "id",
+            "event_timestamp"
+        )
+
+        # Select the bus line itineraries
+        bus_stop_itineraries = self.bus_itineraries.select(
+            "line_code",
+            "itinerary_id",
+            "id",
+            "seq",
+            "max_seq"
+        )
+
+        # Join the DataFrames on 'line_code' and 'id'
+        bus_itineraries_search = map_matching.join(
+            bus_stop_itineraries,
+            on=["line_code", "id"], 
+            how="inner"  # Change to 'left', 'right', 'outer' if needed
+        )
+
+        # Define the window specification
+        windowSpec = Window.partitionBy("line_code", "vehicle", "itinerary_id").orderBy("event_timestamp")
+
+        # Order the DataFrame by event_timestamp within each partition
+        ordered_df = bus_itineraries_search.withColumn(
+            "row_num",
+            F.row_number().over(windowSpec)
+        ).orderBy("line_code", "vehicle", "itinerary_id", "row_num")        
+
+        # Create the 'next_seq_1' and 'next_seq_2' columns using lead()
+        ordered_df = ordered_df.withColumn(
+            "next_seq_1",
+            F.lead(F.col("seq"), 1, None).over(windowSpec) 
+        ).withColumn("next_seq_2",
+            F.lead(F.col("seq"), 2, None).over(windowSpec)             
+        )
+
+        # Filter rows where seq >= next_seq_1 or seq >= next_seq_2
+        filtered_df = ordered_df.filter(
+            ((F.col("seq") < F.col("next_seq_1")) & (F.col("seq") < F.col("next_seq_2"))) |
+            ((F.col("seq") == F.col("max_seq")) | (F.col("seq") == (F.col("max_seq") - 1)))
+        )
+
+        # Add the "generated" column
+        filtered_df = filtered_df.withColumn("generated", F.lit(False)) 
+
+        filtered_df = filtered_df.select(
+            "line_code",
+            "itinerary_id",            
+            "vehicle",
+            "event_timestamp",
+            "seq",
+            "year",
+            "month",
+            "day",
+            "generated"
+        )        
+
+        c = 0
+        while c < 7:
+
+            filtered_df = filtered_df.select(
+                "line_code",
+                "itinerary_id",            
+                "vehicle",
+                "event_timestamp",
+                "seq",
+                "year",
+                "month",
+                "day",
+                "generated"
+            )
+
+            # Interpolate and expand the DataFrame
+            interpolated_df = filtered_df.withColumn(
+                "next_seq", F.lead(F.col("seq"), 1, None).over(windowSpec)
+            ).withColumn(
+                "next_event_timestamp", F.lead(F.col("event_timestamp"), 1, None).over(windowSpec)
+            ).withColumn(
+                "interpolated_next_seq", (F.col("seq") + 1)
+            )
+
+            # Filter for interpolated points
+            interpolated_points = interpolated_df.filter(
+                (F.col("next_seq") != 0) & (F.col("next_seq") > F.col("interpolated_next_seq")) 
+            )
+
+            print(f"c = {c} | count = {interpolated_points.count()}")
+
+            if interpolated_points.count() == 0:
+                break
+
+            # Apply the interpolation UDF (passing columns directly)
+            interpolated_points = interpolated_points.withColumn(
+                "interpolated_timestamp",
+                interpolate_timestamp(                
+                    F.col("seq"),
+                    F.col("event_timestamp"),
+                    F.col("next_seq"),
+                    F.col("next_event_timestamp")
+                )
+            )
+
+            interpolated_points = interpolated_points.withColumn(
+                "interpolated_timestamp", F.to_timestamp(F.col("interpolated_timestamp"))
+            ).withColumn(
+                "generated", F.lit(True)
+            ).filter("interpolated_timestamp < next_event_timestamp")
+
+            interpolated_points = interpolated_points.select(
+                "line_code",
+                "itinerary_id",            
+                "vehicle",
+                "interpolated_timestamp",  
+                "interpolated_next_seq",
+                "year",
+                "month",
+                "day",
+                "generated"
+            ).withColumnRenamed(
+                "interpolated_timestamp", "event_timestamp"
+            ).withColumnRenamed(
+                "interpolated_next_seq", "seq"
+            )
+
+            filtered_df = filtered_df.union(interpolated_points).orderBy("event_timestamp")
+
+            c = c + 1
+
+        joined_df = filtered_df.join(
+            bus_stop_itineraries,
+            on=["line_code", "itinerary_id", "seq"],
+            how="left"  # Change to 'inner', 'right', 'outer' if needed
+        )
+
+        joined_df = joined_df.select(
+            "line_code",
+            "itinerary_id",            
+            "vehicle",
+            "event_timestamp",
+            "id",
+            "seq",
+            "year",
+            "month",
+            "day",
+            "generated"
+        )
+
+        self.save(filtered_df, "/data/refined/bus_tracking")
 
     def __call__(self, *args, **kwargs):
         self.perform()
 
-    def compute_metrics(self) -> DataFrame:
-        window_spec = (
-            Window.partitionBy(self.df.line_code, self.df.vehicle, self.df.year, self.df.month, self.df.day)
-                .orderBy(self.df.event_timestamp)
-        )
+    def filter_data(self, year: str, month: str, day: str, line_code: str) -> DataFrame:
+        return (self.etlspark.sqlContext.read.parquet("/data/trusted/vehicles")
+                .filter(f"year =='{year}' and month=='{month}' and day=='{day}' and line_code == '{line_code}'"))
 
-        events = (self.df.withColumn("last_timestamp", F.lag(F.col('event_timestamp'), 1, 0).over(window_spec))
-                  .withColumn("last_latitude", F.lag(F.col('latitude'), 1, 0).over(window_spec))
-                  .withColumn("last_longitude", F.lag(F.col('longitude'), 1, 0).over(window_spec)))
+    def filter_bus_itineraries(self, year: str, month: str, day: str, line_code: str) -> DataFrame:
+        return (self.etlspark.sqlContext.read.parquet("/data/refined/bus_itineraries")
+                .filter(f"year =='{year}' and month=='{month}' and day=='{day}' and line_code == '{line_code}'"))
 
-        events_processed = (events.withColumn("delta_time",
-                                              F.round(F.unix_timestamp(F.col('event_timestamp')) - F.unix_timestamp(
-                                                  F.col('last_timestamp')), 2))
-                            .withColumn("delta_distance",
-                                        haversine(F.col('longitude'), F.col('latitude'),
-                                                  F.col('last_longitude'), F.col('last_latitude')))
-                            .withColumn("delta_velocity",
-                                        delta_velocity(F.col('delta_distance'), F.col('delta_time')))
-                            .withColumn("moving_status", create_flag_status(F.col('delta_velocity')))
-                            .orderBy('event_timestamp'))
-
-        return events_processed
-
-    def stop_events(self, df) -> DataFrame:
-        trips = TimetableRefinedProcess(self.year, self.month, self.day).trips().drop("year", "month", "day")
-
-        window_spec = (
-            Window.partitionBy(df.moving_status, df.line_code, df.vehicle, df.year, df.month, df.day, df.hour,
-                               df.minute)
-                .orderBy(df.event_timestamp)
-        )
-
-        stop_events = (df.filter(F.col("moving_status") == 'STOPPED')
-                       .withColumn("rn", F.row_number().over(window_spec))
-                       .where(F.col("rn") == 1).drop("rn"))
-
-        stop_events = stop_events.select(F.col("line_code"),
-                                         F.col("vehicle"),
-                                         F.col("event_timestamp").alias("stop_timestamp"),
-                                         F.col("moving_status"),
-                                         F.col("year"),
-                                         F.col("month"),
-                                         F.col("day"),
-                                         F.col("hour"),
-                                         F.col("minute"),
-                                         F.col("latitude"),
-                                         F.col("longitude")
-                                         ).sort(F.col("vehicle"), F.col("event_timestamp"))
-
-        window_spec2 = (
-            Window.partitionBy(stop_events.line_code, stop_events.vehicle)
-                .orderBy(stop_events.stop_timestamp)
-        )
-
-        stop_events_windowed = (stop_events.withColumn("last_stop", F.lag("stop_timestamp").over(window_spec2))
-                                .filter("last_stop is not null")
-                                .select("line_code", "vehicle", "last_stop",
-                                        F.col("stop_timestamp").alias("actual_stop")))
-
-        events_computed = (
-            df.filter("delta_time is not null").join(stop_events_windowed, ['line_code', 'vehicle'], 'inner').filter(
-                F.col("event_timestamp").between(F.col("last_stop"), F.col("actual_stop")))
-                .groupBy("year", "month", "day", "hour", "line_code", "vehicle", "actual_stop", "moving_status")
-                .agg(
-                F.round(F.mean('delta_velocity'), 2).alias("avg_velocity"),
-                F.round(F.sum('delta_distance'), 2).alias("distance"))
-                .withColumnRenamed("actual_stop", "stop_timestamp")
-        )
-
-        stop_events = stop_events.select([F.col(col).alias(col) for col in stop_events.columns])
-
-        events_computed = events_computed.select([F.col(col).alias(col) for col in events_computed.columns]).drop(
-            "year", "month", "day", "hour", "minute")
-
-        stop_events = (
-            stop_events.join(events_computed, ['line_code', 'vehicle', "stop_timestamp", "moving_status"], 'inner')
-                .select("line_code", "vehicle", "stop_timestamp", "moving_status", "latitude", "longitude",
-                        "avg_velocity", "distance",
-                        "year", "month", "day", "hour").sort("line_code", "vehicle", F.asc("stop_timestamp")))
-
-        dff = (
-            stop_events.withColumn("event_time", F.date_format(F.col("stop_timestamp"), 'HH:mm:ss')).alias("se")
-                .join(trips.alias("tr"), ["line_code", "vehicle"])
-                .filter(F.col("event_time").between(F.col("start_time"), F.col("end_time")))
-        )
-
-        return (dff.select("line_code", "line_way", "vehicle", "moving_status", "stop_timestamp", "latitude",
-                           "longitude", "avg_velocity", "year", "month", "day", "hour"))
-
-    def event_edges(self, events) -> DataFrame:
-        trips = TimetableRefinedProcess(self.year, self.month, self.day).trips().drop("year", "month", "day")
-        bus_stops = BusStopRefinedProcess(self.year, self.month, self.day).bus_stops().drop("year", "month", "day")
-        bus_stops = bus_stops.withColumnRenamed("latitude", "bus_stop_latitude").withColumnRenamed("longitude",
-                                                                                                   "bus_stop_longitude")
-
-        events_computed = (
-            events.withColumn("event_time", F.date_format(F.col("event_timestamp"), 'HH:mm:ss')).alias("se")
-                .join(trips.alias("tr"), ["line_code", "vehicle"])
-                .filter(F.col("event_time").between(F.col("start_time"), F.col("end_time")))
-        )
-
-        event_edges = (events_computed.alias("se").join(bus_stops.alias("bs"), ["line_code", "line_way"], 'inner')
-                       .withColumn("distance",
-                                   haversine(F.col('se.longitude').cast(T.DoubleType()),
-                                             F.col('se.latitude').cast(T.DoubleType()),
-                                             F.col('bs.bus_stop_longitude').cast(T.DoubleType()),
-                                             F.col('bs.bus_stop_latitude').cast(T.DoubleType())))
-                       .filter(F.col("distance") < 30))
-
-        event_edges = event_edges.select("line_code", "line_way", "vehicle", "event_timestamp", "latitude", "longitude",
-                                         "year", "month", "day", "hour", "minute", "moving_status",
-                                         "timetable", "number", "delta_velocity")
-
-        dff = (event_edges.groupBy(F.col("line_code"), F.col("line_way"), F.col("vehicle"),
-                                   F.col("year"),
-                                   F.col("month"), F.col("day"), F.col("hour"), F.col("minute"),
-                                   F.col("moving_status"), F.col("number"))
-               .agg(F.mean("delta_velocity").alias("avg_velocity"),
-                    F.last("event_timestamp").alias("event_timestamp"),
-                    F.last("latitude").alias("latitude"),
-                    F.last("longitude").alias("longitude")
-                    ).orderBy(F.col("line_code"), F.col("vehicle"),
-                              F.col("event_timestamp")))
-
-        return dff.select("line_code", "line_way", "vehicle", "moving_status", "event_timestamp", "latitude",
-                          "longitude", "avg_velocity", "number", "year", "month", "day", "hour")
-
-    @classmethod
-    def process_events(cls, stop_events, event_edges) -> DataFrame:
-        events = event_edges.drop("number").union(stop_events.withColumnRenamed("stop_timestamp", "event_timestamp"))
-
-        w0 = (
-            Window.partitionBy(events.line_code, events.line_way, events.vehicle, events.moving_status, events.year,
-                               events.month, events.day, events.event_timestamp)
-                .orderBy(events.event_timestamp)
-        )
-
-        events = (events.withColumn("avg_velocity", F.mean(F.col('avg_velocity')).over(w0))
-                  .withColumn("rn", F.row_number().over(w0))
-                  .where(F.col("rn") == 1).drop("rn"))
-
-        window_spec = (
-            Window.partitionBy(events.line_code, events.line_way, events.vehicle, events.year, events.month, events.day)
-                .orderBy(events.event_timestamp)
-        )
-        events = (events.withColumn("last_timestamp", F.lag(F.col('event_timestamp'), 1, 0).over(window_spec))
-                  .withColumn("delta_time_in_sec",
-                              (F.unix_timestamp(F.col('event_timestamp')) - F.unix_timestamp(F.col("last_timestamp")))))
-
-        return events
+    def filter_bus_lines(self, year: str, month: str, day: str, line_code: str) -> DataFrame:
+        return (self.etlspark.sqlContext.read.parquet("/data/refined/bus_lines")
+                .filter(f"year =='{year}' and month=='{month}' and day=='{day}' and line_code == '{line_code}'"))
 
     @staticmethod
     def save(df: DataFrame, output: str):
         (df.write.mode('overwrite')
-         .partitionBy("year", "month", "day")
+         .partitionBy("year", "month", "day", "line_code")
          .format("parquet").save(output))

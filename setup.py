@@ -10,8 +10,8 @@ DEPENDENCIES = list(filter(
 setup(
     name='urbs-data-processing',
     version='0.0.1',
-    author='AltR',
-    author_email='altieris.marcelino@gmail.com',
+    author='JBorges',
+    author_email='jcn.borges@gmail.com',
     license=open(os.path.join(BASE_DIR, 'LICENSE')).read(),
     packages=find_namespace_packages(include=['dataprocessing.*']),
     namespace_packages=['dataprocessing'],
