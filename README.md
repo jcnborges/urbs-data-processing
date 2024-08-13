@@ -11,37 +11,36 @@ docker-compose build
 
 ### download files trom UFPR portal
 
-docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2019-05-01" -e "2019-05-07" -fd folder -fl file
+docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2022-07-11" -e "2022-07-15" -fd folder -fl file
 
 -fd: linhas, pontoslinha, veiculos
 -fl: linhas.json.xz, pontosLinha.json.xz, veiculos.json.xz
 
 ## Examples
 
-docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2019-05-01" -e "2019-05-07" -fd linhas -fl linhas.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2022-07-11" -e "2022-07-15" -fd linhas -fl linhas.json.xz
 
-docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2019-05-01" -e "2019-05-07" -fd pontoslinha -fl pontosLinha.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2022-07-11" -e "2022-07-15" -fd pontoslinha -fl pontosLinha.json.xz
 
-docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2019-05-01" -e "2019-05-07" -fd veiculos -fl veiculos.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/download_files.py -s "2022-07-11" -e "2022-07-15" -fd veiculos -fl veiculos.json.xz
 
 
 ```
-
 ### Uncompress URBS Data
 ```
 
 ## uncompress urbs data 
 
-docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2019-05-01" -e "2019-05-07" -fd linhas -fl linhas.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2022-07-11" -e "2022-07-15" -fd linhas -fl linhas.json.xz
 
 -fd: linhas, pontoslinha, veiculos
 -fl: linhas.json.xz, pontosLinha.json.xz, veiculos.json.xz
 
-docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2019-05-01" -e "2019-05-07" -fd linhas -fl linhas.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2022-07-11" -e "2022-07-15" -fd linhas -fl linhas.json.xz
 
-docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2019-05-01" -e "2019-05-07" -fd pontoslinha -fl pontosLinha.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2022-07-11" -e "2022-07-15" -fd pontoslinha -fl pontosLinha.json.xz
 
-docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2019-05-01" -e "2019-05-07" -fd veiculos -fl veiculos.json.xz
+docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s "2022-07-11" -e "2022-07-15" -fd veiculos -fl veiculos.json.xz
 
 ```
 
@@ -49,7 +48,7 @@ docker-compose exec jupyterlab python dataprocessing/job/decompress_files.py -s 
 ```
 ## process entire month data, prepare, deduplicate and clean for following processing pipelines.
 
-docker-compose exec jupyterlab  python dataprocessing/job/trust_ingestion.py -d "2019-05"
+docker-compose exec jupyterlab  python dataprocessing/job/trust_ingestion.py -d "2022-07"
 
 ```
 
