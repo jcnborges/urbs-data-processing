@@ -9,8 +9,7 @@ PACKAGE_PARENT = '..'
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.join(os.getcwd(), os.path.expanduser(__file__))))
 sys.path.append(os.path.normpath(os.path.join(SCRIPT_DIR, PACKAGE_PARENT)))
 
-from dataprocessing.processors.refined_ingestion import LineRefinedProcess, BusStopRefinedProcess, \
-    TimetableRefinedProcess, TrackingDataRefinedProcess
+from dataprocessing.processors.refined_ingestion import BusLineRefinedProcess, BusItineraryRefinedProcess, BusTrackingRefinedMultithreadProcess
 
 parser = ArgumentParser()
 parser.add_argument("-ds", "--start_date", dest="start_date", help="start_date", metavar="DATE_START")
@@ -38,13 +37,11 @@ for i in range(delta.days + 1):
     print(dt)
 
     if job == 'line':
-        LineRefinedProcess(year, month, day)()
-    elif job == 'timetable':
-        TimetableRefinedProcess(year, month, day)()
-    elif job == 'bus-stop':
-        BusStopRefinedProcess(year, month, day)()
+        BusLineRefinedProcess(year, month, day)()
+    elif job == 'itinerary':
+        BusItineraryRefinedProcess(year, month, day)()
     elif job == 'tracking':
-        TrackingDataRefinedProcess(year, month, day)()
+        BusTrackingRefinedMultithreadProcess(year, month, day, 5)()
     else:
         raise NotImplementedError("Job not implemented yet...")
 

@@ -57,16 +57,14 @@ docker-compose exec jupyterlab  python dataprocessing/job/trust_ingestion.py -d 
 
 ### Execute refined processing for creating several enriched datasources.
 
-docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2019-05-03" -de "2019-05-03" -j line
+docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2022-07-11" -de "2022-07-15" -j line
 
--j [line,timetable,bus-stop, tracking]
+-j [line, itinerary, tracking]
 
-docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2019-05-03" -de "2019-05-03" -j line
+docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2022-07-11" -de "2022-07-15" -j line
 
-docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2019-05-03" -de "2019-05-03" -j timetable
+docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2022-07-11" -de "2022-07-15" -j itinerary
 
-docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2019-05-03" -de "2019-05-03" -j bus-stop
-
-docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2019-05-03" -de "2019-05-03" -j tracking
+docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2022-07-11" -de "2022-07-15" -j tracking
 
 ```

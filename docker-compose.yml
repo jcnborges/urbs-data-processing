@@ -15,3 +15,5 @@ services:
     volumes:
       - .:/opt/urbs-data-processing/
       - /mnt/work/datalake:/data/
+      - /mnt/work/database/mysql:/var/lib/mysql/
+      - /mnt/work/database/mysql-files:/var/lib/mysql-files/

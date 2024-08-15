@@ -4,6 +4,8 @@ import pyspark.sql.functions as F
 import pyspark.sql.types as T
 from pyspark.sql.window import Window
 from .sparketl import ETLSpark
+import threading
+import time
 
 @F.udf(returnType=T.DoubleType())
 def interpolate_timestamp(seq: int, event_timestamp: T.TimestampType, next_seq: int, next_event_timestamp: T.TimestampType) -> float:
@@ -122,8 +124,11 @@ class BusLineRefinedProcess:
          .format("parquet").save(output))
 
 class BusTrackingRefinedProcess:
-    def __init__(self, year, month, day, line_code):
-        self.etlspark = ETLSpark()
+    def __init__(self, year, month, day, line_code, etlspark = None):
+        if (etlspark == None):
+            self.etlspark = ETLSpark()
+        else:
+            self.etlspark = etlspark
         self.vehicles = self.filter_data(year, month, day, line_code)
         self.bus_itineraries = self.filter_bus_itineraries(year, month, day, line_code)
         self.bus_lines = self.filter_bus_lines(year, month, day, line_code)      
@@ -352,7 +357,7 @@ class BusTrackingRefinedProcess:
             "generated"
         )
 
-        self.save(filtered_df, "/data/refined/bus_tracking")
+        self.save(joined_df, "/data/refined/bus_tracking")
 
     def __call__(self, *args, **kwargs):
         self.perform()
@@ -374,3 +379,54 @@ class BusTrackingRefinedProcess:
         (df.write.mode('overwrite')
          .partitionBy("year", "month", "day", "line_code")
          .format("parquet").save(output))
+        
+class BusTrackingRefinedMultithreadProcess:
+    def __init__(self, year, month, day, n_threads):
+        self.etlspark = ETLSpark()
+        self.vehicles = self.filter_data(year, month, day)
+        self.year = year
+        self.month = month
+        self.day = day
+        self.n_threads = n_threads
+
+    def perform(self):
+        # Get distinct line codes
+        line_codes = self.vehicles.select("line_code").distinct().collect()
+        line_codes = [row.line_code for row in line_codes]
+
+        # Create a list to store threads
+        threads = []
+
+        # Process each line code in a separate thread
+        for line_code in line_codes:
+            # Wait if the maximum number of threads is reached
+            while threading.active_count() > self.n_threads: 
+                time.sleep(0.1)
+
+            # Create a new processor instance for the line code
+            processor = BusTrackingRefinedProcess(self.year, self.month, self.day, line_code, self.etlspark)
+            # Create a thread for the processor
+            thread = threading.Thread(target=processor)
+            # Start the thread
+            thread.start()
+            # Add the thread to the list
+            threads.append(thread)
+
+        # Wait for all threads to finish
+        for thread in threads:
+            thread.join()
+
+        print("Processing complete!")
+
+    def __call__(self, *args, **kwargs):
+        self.perform()
+
+    def filter_data(self, year: str, month: str, day: str) -> DataFrame:
+        return (self.etlspark.sqlContext.read.parquet("/data/trusted/vehicles")
+                .filter(f"year =='{year}' and month=='{month}' and day=='{day}'"))
+
+    @staticmethod
+    def save(df: DataFrame, output: str):
+        (df.write.mode('overwrite')
+         .partitionBy("year", "month", "day")
+         .format("parquet").save(output)) 
