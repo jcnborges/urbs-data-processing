@@ -1,7 +1,7 @@
 FROM jupyter/pyspark-notebook:spark-3.2.1
 
 USER root
-RUN apt-get -qq update && apt-get install -y --no-install-recommends apt-utils openssh-client
+RUN apt-get -qq update && apt-get install -y --no-install-recommends apt-utils openssh-client mysql-client
 
 USER $NB_UID
 

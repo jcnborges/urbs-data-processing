@@ -9,8 +9,8 @@ class ETLSpark:
     def __init__(self):
         self.conf = SparkConf().setAppName("App")
         self.conf = (self.conf.setMaster('local[*]')
-                     .set('spark.executor.memory', '12G')
-                     .set('spark.driver.memory', '12G')
+                     .set('spark.executor.memory', '4G')
+                     .set('spark.driver.memory', '2G')
                      .set('spark.driver.maxResultSize', '5G')
                      .set('spark.sql.autoBroadcastJoinThreshold', '-1')
                      .set("spark.sql.sources.partitionOverwriteMode", "dynamic")

@@ -1,8 +1,26 @@
 version: '3.7'
 
+networks:
+  urbs-network:
+    driver: bridge
+
 services:
+  mysql:
+    container_name: urbs-data-mysql
+    image: mysql:8.0.39
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456789
+    ports:
+      - '3307:3306'
+    volumes:
+      - ./init-scripts:/docker-entrypoint-initdb.d/
+      - /mnt/work/database/mysql:/var/lib/mysql/
+      - /mnt/work/database/mysql-files:/var/lib/mysql-files/
+    networks:
+      - urbs-network
+
   jupyterlab:
-    network_mode: bridge
     container_name: urbs-jupyterlab
     restart: always
     user: root
@@ -17,3 +35,11 @@ services:
       - /mnt/work/datalake:/data/
       - /mnt/work/database/mysql:/var/lib/mysql/
       - /mnt/work/database/mysql-files:/var/lib/mysql-files/
+    networks:
+      - urbs-network
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: 123456789
+      MYSQL_DATABASE: busanalysis_dw      
