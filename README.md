@@ -68,3 +68,12 @@ docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -
 docker-compose exec jupyterlab  python dataprocessing/job/refined_ingestion.py -ds "2022-07-11" -de "2022-07-15" -j tracking
 
 ```
+
+### Load data into MySQL
+
+```
+
+docker-compose exec jupyterlab  python dataprocessing/job/mysql_loader.py -ds "2022-07-11"  -de "2022-07-15"
+
+
+```

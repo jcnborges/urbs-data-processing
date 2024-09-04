@@ -264,7 +264,7 @@ class BusTrackingRefinedProcess:
             "generated"
         )        
 
-        c = 0
+        c = 7
         while c < 7:
 
             filtered_df = filtered_df.select(

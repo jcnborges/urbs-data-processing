@@ -20,6 +20,8 @@ class MySQLDataProcess:
 
     def perform(self):
 
+        # Data ingestion
+
         etl_line = self.etl_line()
         self.save(etl_line.select("line_code", "line_name", "service_category", "color"), "/var/lib/mysql-files/etl_line")
 
@@ -44,6 +46,8 @@ class MySQLDataProcess:
         self.move("etl_line")
         self.move("etl_itinerary")
         self.move("etl_event")
+
+        # Data loading
 
         # Access environment variables
         host = os.environ.get("MYSQL_HOST", "mysql")  # Default to "mysql" if not set
@@ -72,7 +76,7 @@ class MySQLDataProcess:
         # Print output or handle errors
         print(stdout.decode("utf-8"))
         if stderr:
-            print(f"Error: {stderr.decode('utf-8')}")  
+            print(stderr.decode('utf-8'))  
 
         # mysql -uroot --password=$pwd -D busanalysis_dw -e "call busanalysis_dw.sp_load_all('$1');"
         # Execute the MySQL command using subprocess
@@ -95,7 +99,7 @@ class MySQLDataProcess:
         # Print output or handle errors
         print(stdout.decode("utf-8"))
         if stderr:
-            print(f"Error: {stderr.decode('utf-8')}")                             
+            print(stderr.decode('utf-8'))                             
 
     def etl_line(self) -> DataFrame:
         return (self.etlspark.sqlContext.read.option("mergeSchema", "true").parquet("/data/refined/bus_lines")
