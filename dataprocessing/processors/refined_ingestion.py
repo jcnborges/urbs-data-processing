@@ -4,8 +4,6 @@ import pyspark.sql.functions as F
 import pyspark.sql.types as T
 from pyspark.sql.window import Window
 from .sparketl import ETLSpark
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 @F.udf(returnType=T.DoubleType())
 def interpolate_timestamp(seq: int, event_timestamp: T.TimestampType, next_seq: int, next_event_timestamp: T.TimestampType) -> float:
@@ -264,7 +262,7 @@ class BusTrackingRefinedProcess:
             "generated"
         )        
 
-        c = 7
+        c = 0
         while c < 7:
 
             filtered_df = filtered_df.select(
@@ -341,6 +339,21 @@ class BusTrackingRefinedProcess:
             how="left"  # Change to 'inner', 'right', 'outer' if needed
         )
 
+        # Final validation        
+        joined_df = joined_df.withColumn(
+            "next_seq",
+            F.lead(F.col("seq"), 1, None).over(windowSpec) 
+        ).withColumn("last_seq",
+            F.lag(F.col("seq"), 1, None).over(windowSpec)             
+        )
+
+        # Apply the filter logic
+        joined_df = joined_df.filter(
+            (F.col("seq") == F.col("last_seq") + 1) | 
+            (F.col("next_seq") == F.col("seq") + 1) |
+            (F.col("seq") == 0)
+        )        
+
         joined_df = joined_df.select(
             "line_code",
             "itinerary_id",            
@@ -375,4 +388,4 @@ class BusTrackingRefinedProcess:
     def save(df: DataFrame, output: str):
         (df.write.mode('overwrite')
          .partitionBy("year", "month", "day", "line_code")
-         .format("parquet").save(output))        
+         .format("parquet").save(output))
