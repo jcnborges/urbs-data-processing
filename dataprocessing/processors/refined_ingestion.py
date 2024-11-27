@@ -186,7 +186,7 @@ class BusTrackingRefinedProcess:
             "month",
             "day",
             "id",  # From dim_bus_stop
-            F.window("event_timestamp", "30 minutes").alias("time_window")            
+            F.window("event_timestamp", "10 minutes").alias("time_window")            
         ).agg(
             F.avg("event_timestamp").alias("mean_event_timestamp")
         )
@@ -243,8 +243,10 @@ class BusTrackingRefinedProcess:
 
         # Filter rows where seq >= next_seq_1 or seq >= next_seq_2
         filtered_df = ordered_df.filter(
-            ((F.col("seq") < F.col("next_seq_1")) & (F.col("seq") < F.col("next_seq_2"))) |
-            ((F.col("seq") == F.col("max_seq")) | (F.col("seq") == (F.col("max_seq") - 1)))
+            (F.col('seq') != F.col('next_seq_1')) & # Condition for all points
+            (((F.col("seq") < F.col("next_seq_1")) & (F.col("seq") < F.col("next_seq_2"))) | # Condition for intermediate points
+            ((F.col("seq") == F.col("max_seq")) & (F.col('next_seq_1') == 0)) | # Condition for the last point
+            ((F.col("seq") == (F.col("max_seq") - 1)) & (F.col('next_seq_2') == 0))) # Condition for the second to last point
         )
 
         # Add the "generated" column
@@ -263,7 +265,7 @@ class BusTrackingRefinedProcess:
         )        
 
         c = 0
-        while c < 7:
+        while c <= 7:
 
             filtered_df = filtered_df.select(
                 "line_code",
