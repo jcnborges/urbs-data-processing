@@ -241,12 +241,31 @@ class BusTrackingRefinedProcess:
             F.lead(F.col("seq"), 2, None).over(windowSpec)             
         )
 
-        # Filter rows where seq >= next_seq_1 or seq >= next_seq_2
+        # Filter 1 - Remove duplicate tags
+        ordered_df = ordered_df.filter(
+            F.col('seq') != F.col('next_seq_1') # Condition for all points
+        )
+
+        # Filter 2 - Remove intermediate tags out of order but keep the last and second-to-last tags
+        ordered_df = ordered_df.filter(
+            ((F.col("seq") < F.col("next_seq_1")) & (F.col("seq") < F.col("next_seq_2"))) |
+            ((F.col("seq") == F.col("max_seq")) | (F.col("seq") == F.col("max_seq") - 1))
+        )
+
+        # Create the 'next_seq_1' and 'next_seq_2' columns using lead()
+        ordered_df = ordered_df.withColumn(
+            "next_seq_1",
+            F.lead(F.col("seq"), 1, None).over(windowSpec) 
+        ).withColumn("next_seq_2",
+            F.lead(F.col("seq"), 2, None).over(windowSpec)             
+        )
+
+        # Filter 3 - Remove invalid tags from the end
         filtered_df = ordered_df.filter(
             (F.col('seq') != F.col('next_seq_1')) & # Condition for all points
             (((F.col("seq") < F.col("next_seq_1")) & (F.col("seq") < F.col("next_seq_2"))) | # Condition for intermediate points
             ((F.col("seq") == F.col("max_seq")) & (F.col('next_seq_1') == 0)) | # Condition for the last point
-            ((F.col("seq") == (F.col("max_seq") - 1)) & (F.col('next_seq_2') == 0))) # Condition for the second to last point
+            ((F.col("seq") == (F.col("max_seq") - 1)) & (F.col('next_seq_2') == 0))) # Condition for the second-to-last point
         )
 
         # Add the "generated" column
@@ -370,6 +389,7 @@ class BusTrackingRefinedProcess:
         )
 
         self.save(joined_df, "/data/refined/bus_tracking")
+        #self.save(filtered_df, "/data/refined/bus_tracking")
 
     def __call__(self, *args, **kwargs):
         self.perform()
